@@ -212,6 +212,79 @@ the expected module file is absent. These checks distinguish those cases from
 other loading failures. A compatible build is needed for library version
 mismatches; do not replace system libraries manually to match the archive.
 
+### Repairing a GLIBC mismatch on Ubuntu 25.04
+
+A reported installation on Ubuntu 25.04 x86_64 failed to load the archive's
+terminal module with:
+
+```text
+Error: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.42' not found
+(required by /opt/code-server/lib/vscode/node_modules/node-pty/build/Release/pty.node)
+```
+
+This confirms that the bundled terminal module requires a newer GLIBC version
+than that server provides. Rebuilding the same `node-pty` version on the server
+can address this module's compatibility problem. This repair procedure has not
+yet been confirmed to resolve the reported installation.
+
+Run the following over SSH. First install the compiler, Python, and npm:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential python3 npm
+```
+
+If package installation fails, stop and resolve the package repository errors
+before continuing. See the upstream [node-gyp build requirements](https://github.com/nodejs/node-gyp#on-unix).
+
+Then run this block as the normal user who runs code-server. It downloads the
+installed `node-pty` version and build tools into a temporary directory, compiles
+against the bundled Node.js, checks that the rebuilt module loads, and backs up
+the original module before replacing it. The service restart interrupts active
+editor connections and may interrupt terminal sessions.
+
+```bash
+(
+set -e
+
+export PATH="/opt/code-server/lib:$PATH"
+repair_dir="$(mktemp -d /tmp/code-server-pty.XXXXXX)"
+pty_dir="/opt/code-server/lib/vscode/node_modules/node-pty"
+pty_version="$(node -p "require('$pty_dir/package.json').version")"
+
+npm install --prefix "$repair_dir" --ignore-scripts \
+  --no-audit --no-fund "node-pty@$pty_version" node-gyp@11
+
+cd "$repair_dir/node_modules/node-pty"
+node "$repair_dir/node_modules/node-gyp/bin/node-gyp.js" rebuild
+
+node -e \
+  "require('./build/Release/pty.node'); console.log('Rebuilt module loaded')"
+
+sudo cp -a "$pty_dir/build/Release/pty.node" \
+  "$pty_dir/build/Release/pty.node.backup-$(date +%Y%m%d-%H%M%S)"
+
+systemctl --user stop code-server
+sudo install -m 755 build/Release/pty.node \
+  "$pty_dir/build/Release/pty.node"
+systemctl --user start code-server
+)
+```
+
+Expected verification output includes `Rebuilt module loaded`. Reload the
+browser and open a new terminal. You can also rerun the `PTY_OK` test above to
+verify that the installed module can start Bash.
+
+If the rebuild fails before the service stops, the installed module remains
+unchanged. If replacement fails after stopping the service, run
+`systemctl --user start code-server` to bring it back up and preserve the error
+output for diagnosis.
+
+This repairs only the terminal dependency. Other bundled native modules may
+also require newer system libraries. A full archive built for the target
+Ubuntu version and CPU architecture is the broader compatibility fix. A future
+archive installation may overwrite this local repair.
+
 ### 3. Collect terminal host logs
 
 After reproducing the blank terminal, run:
