@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the public Ubuntu x86_64 release as the invoking user's service.
+# Install the public x86_64 release on Ubuntu or Debian as a user service.
 set -Eeuo pipefail
 
 RELEASE_TAG="ubuntu-2026-09-27"
@@ -9,6 +9,8 @@ INSTALL_DIR="/opt/code-server"
 
 log() { printf '\n%s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+
+supported_os() { [[ "$1" == ubuntu || "$1" == debian ]]; }
 
 valid_domain() {
   [[ "$1" =~ ^([[:alnum:]]([[:alnum:]-]*[[:alnum:]])?\.)+[[:alpha:]]{2,}(:[0-9]{1,5})?$ ]]
@@ -125,8 +127,9 @@ rebuild_pty() {
 }
 
 prepare_terminal() {
-  # Rebuild on older Ubuntu, or if the module fails even on a newer Ubuntu.
-  if dpkg --compare-versions "$VERSION_ID" lt 26.04; then
+  # Ubuntu version numbers and Debian version numbers are not comparable.
+  # Debian rebuilds when its actual native-module load check fails.
+  if [[ "$ID" == ubuntu ]] && dpkg --compare-versions "$VERSION_ID" lt 26.04; then
     log 'Older Ubuntu detected: rebuilding node-pty for this system.'
     rebuild_pty
   elif ! "$stage/lib/node" -e 'require(process.argv[1])' "$stage/lib/vscode/node_modules/node-pty/build/Release/pty.node"; then
@@ -214,7 +217,8 @@ main() {
   [[ -r /etc/os-release ]] || die 'Cannot identify the operating system.'
   # shellcheck disable=SC1091
   . /etc/os-release
-  [[ "$ID" == ubuntu ]] || die "This installer supports Ubuntu, not $ID."
+  supported_os "${ID:-unknown}" || die "This installer supports Ubuntu and Debian, not ${ID:-unknown}."
+  VERSION_ID="${VERSION_ID:-unknown}"
   [[ "$(uname -m)" == x86_64 ]] || die 'This release supports x86_64 only.'
   systemctl --user show-environment >/dev/null || die 'No systemd user session. Log in directly over SSH as your normal user.'
   install_user="$(id -un)"
@@ -222,7 +226,7 @@ main() {
   run_id="$(date +%Y%m%d-%H%M%S)-$$"
   backup_dir="$HOME/.local/state/code-server-installer/backups/$run_id"
   install_backup="/opt/code-server.backup-$run_id"
-  log "Detected Ubuntu $VERSION_ID ($(uname -m)); installing $RELEASE_TAG for $install_user."
+  log "Detected ${PRETTY_NAME:-$ID $VERSION_ID} ($(uname -m)); installing $RELEASE_TAG for $install_user."
   log 'Existing code-server settings and extensions will be removed from their active locations and backed up. The apt package will be removed if installed.'
   exec 3<>/dev/tty || die 'An interactive terminal is required for OAuth settings.'
   prompt_settings

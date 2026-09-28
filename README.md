@@ -5,7 +5,7 @@ is private; this repository contains release downloads only. The archive
 contains the compiled application, bundled VS Code web assets, Node.js, and
 runtime dependencies.
 
-## Automatic Ubuntu installation
+## Automatic Ubuntu and Debian installation
 
 Download and run the interactive installer as your normal SSH user:
 
@@ -14,16 +14,16 @@ curl -fL -o install.sh https://raw.githubusercontent.com/cpuhf/code-server-cpu-o
 bash install.sh
 ```
 
-The [installer](install.sh) uses sudo for system changes. It supports Ubuntu
+The [installer](install.sh) uses sudo for system changes. It accepts Ubuntu and Debian
 x86_64 with a working systemd user session and requires an interactive terminal.
 If curl is not installed, install it first with `sudo apt-get install curl`.
 
 It performs the following steps:
 
-1. Detects Ubuntu version and CPU architecture, downloads the pinned release,
+1. Detects the distribution, system version, and CPU architecture, downloads the pinned release,
    verifies its SHA-256 checksum, and checks the bundled runtime.
 2. Rebuilds `node-pty` on Ubuntu versions older than 26.04, or when the native
-   module cannot load. It installs build tools as needed and tests Bash startup
+   module cannot load on either Ubuntu or Debian. It installs build tools as needed and tests Bash startup
    before replacing the existing installation.
 3. Stops existing code-server user and system services for the invoking account
    and removes the `code-server` apt package if installed.
@@ -42,10 +42,20 @@ Configure an HTTPS reverse proxy with WebSocket support to forward to the
 printed `127.0.0.1:<port>` address. The installer configures code-server; your
 DNS, TLS certificate, and reverse proxy need to be configured separately.
 
-For older Ubuntu, the native-module rebuild downloads dependencies and Node.js
-headers. If apt or npm reports an error, fix that error before rerunning. Other
+For older Ubuntu and Debian systems needing a terminal-module rebuild, the
+installer downloads dependencies and Node.js headers. If apt or npm reports an error, fix that error before rerunning. Other
 native dependencies may still need a full build for the target Ubuntu version.
 The terminal rebuild was confirmed to fix the reported Ubuntu 25.04 installation.
+
+Debian uses the same installer command above. Compatibility is checked by
+running the bundled runtime and testing the actual native terminal module;
+Debian version numbers are not compared with Ubuntu version numbers. If the
+module fails to load, the installer rebuilds it against Debian's libraries using
+the bundled Node.js. The runtime and terminal tests run before old settings or
+installations are replaced. This archive was built on Ubuntu; passing these
+checks does not guarantee compatibility with every native dependency on every
+Debian release. Debian support has been checked with simulated installer tests;
+an end-to-end installation on Debian has not yet been verified.
 
 Rerunning the installer creates fresh configuration and moves the existing
 settings and extensions to another backup. To inspect the running service:
