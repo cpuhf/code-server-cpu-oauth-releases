@@ -287,18 +287,19 @@ than that server provides. Rebuilding the same `node-pty` version on the server
 can address this module's compatibility problem. The user confirmed that this
 repair restored the integrated terminal on that Ubuntu 25.04 installation.
 
-Run the following over SSH. First install the compiler, Python, and npm:
+Run the following over SSH. First install the compiler and Python:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential python3 npm
+sudo apt-get install -y build-essential python3
 ```
 
 If package installation fails, stop and resolve the package repository errors
 before continuing. See the upstream [node-gyp build requirements](https://github.com/nodejs/node-gyp#on-unix).
 
 Then run this block as the normal user who runs code-server. It downloads the
-installed `node-pty` version and build tools into a temporary directory, compiles
+installed `node-pty` version, a verified standalone npm, and build tools into a
+temporary directory, compiles
 against the bundled Node.js, checks that the rebuilt module loads, and backs up
 the original module before replacing it. The service restart interrupts active
 editor connections and may interrupt terminal sessions.
@@ -312,8 +313,16 @@ repair_dir="$(mktemp -d /tmp/code-server-pty.XXXXXX)"
 pty_dir="/opt/code-server/lib/vscode/node_modules/node-pty"
 pty_version="$(node -p "require('$pty_dir/package.json').version")"
 
-npm install --prefix "$repair_dir" --ignore-scripts \
-  --no-audit --no-fund "node-pty@$pty_version" node-gyp@11
+# Use a pinned official npm archive, avoiding the distro npm package.
+curl -fL --retry 3 -o "$repair_dir/npm.tgz" \
+  https://registry.npmjs.org/npm/-/npm-11.6.2.tgz
+printf '%s  %s\n' 'ee22b335fcbc95662cdf3ab8a053daf045d9cf9c6df6040d28965abb707512b2c16fa6c5eec049d34c74f78f390cebd14f697919eadb97756564d4f9eccc4954' "$repair_dir/npm.tgz" | sha512sum -c -
+mkdir -p "$repair_dir/npm"
+tar --no-same-owner -xzf "$repair_dir/npm.tgz" -C "$repair_dir/npm"
+node "$repair_dir/npm/package/bin/npm-cli.js" install \
+  --prefix "$repair_dir" --ignore-scripts --no-audit --no-fund \
+  --cache "$repair_dir/npm-cache" --userconfig /dev/null --registry https://registry.npmjs.org \
+  "node-pty@$pty_version" node-gyp@11
 
 cd "$repair_dir/node_modules/node-pty"
 node "$repair_dir/node_modules/node-gyp/bin/node-gyp.js" rebuild
@@ -344,6 +353,22 @@ This repairs only the terminal dependency. Other bundled native modules may
 also require newer system libraries. A full archive built for the target
 Ubuntu version and CPU architecture is the broader compatibility fix. A future
 archive installation may overwrite this local repair.
+
+### Ubuntu npm package dependency conflicts
+
+An earlier installer attempted to install npm through apt. On a reported Ubuntu
+25.04 system this failed with `node-css-loader : Depends: webpack but it is not
+installable`. That error occurred before the old code-server installation or
+settings were replaced.
+
+The updated installer installs only the compiler and Python through apt. It
+downloads the official npm 11.6.2 archive, verifies a pinned SHA-512 checksum, and
+runs npm with the bundled Node.js in a temporary directory. It does not require
+the Ubuntu or Debian npm package and does not replace system Node.js or npm.
+
+Download the latest installer again and rerun it if you encountered this error.
+If apt still fails while installing the compiler or Python, resolve that package
+error before rerunning; the standalone npm only avoids npm's distro dependencies.
 
 ### 3. Collect terminal host logs
 

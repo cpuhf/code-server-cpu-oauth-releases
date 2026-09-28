@@ -2,6 +2,7 @@
 # Install the public x86_64 release on Ubuntu or Debian as a user service.
 set -Eeuo pipefail
 
+INSTALLER_VERSION="2026-09-28.2"
 RELEASE_TAG="ubuntu-2026-09-27"
 RELEASE_SHA256="8a1893dccefac286318130384fb24571705336187cca12a03e2b193b55225d8f"
 RELEASE_URL="https://github.com/cpuhf/code-server-cpu-oauth-releases/releases/download/$RELEASE_TAG/code-server-ubuntu.tar.gz"
@@ -109,15 +110,34 @@ terminal.onExit(event => {
 JS
 }
 
+bootstrap_npm() {
+  # Use the official self-contained npm package, not the distro's npm package.
+  local npm_version="11.6.2"
+  local npm_sha512="ee22b335fcbc95662cdf3ab8a053daf045d9cf9c6df6040d28965abb707512b2c16fa6c5eec049d34c74f78f390cebd14f697919eadb97756564d4f9eccc4954"
+  local npm_archive="$work_dir/npm.tgz"
+  local npm_home="$work_dir/npm"
+  log "Downloading verified standalone npm $npm_version for the bundled Node.js..."
+  curl --fail --location --retry 3 --output "$npm_archive" \
+    "https://registry.npmjs.org/npm/-/npm-$npm_version.tgz"
+  printf '%s  %s\n' "$npm_sha512" "$npm_archive" | sha512sum -c -
+  mkdir -p "$npm_home"
+  tar --no-same-owner -xzf "$npm_archive" -C "$npm_home"
+  npm_cli="$npm_home/package/bin/npm-cli.js"
+  "$stage/lib/node" "$npm_cli" --version
+}
+
 rebuild_pty() {
   log 'Building the terminal module against this server’s libraries...'
   sudo apt-get update
-  sudo apt-get install -y build-essential python3 npm
+  sudo apt-get install -y build-essential python3
+  local npm_cli
+  bootstrap_npm
   (
     export PATH="$stage/lib:$PATH"
     local pty_version
     pty_version="$(node -p 'require(process.argv[1]).version' "$stage/lib/vscode/node_modules/node-pty/package.json")"
-    npm install --prefix "$work_dir/repair" --ignore-scripts --no-audit --no-fund \
+    node "$npm_cli" install --prefix "$work_dir/repair" --ignore-scripts --no-audit --no-fund \
+      --cache "$work_dir/npm-cache" --userconfig /dev/null --registry https://registry.npmjs.org \
       "node-pty@$pty_version" node-gyp@11
     cd "$work_dir/repair/node_modules/node-pty"
     node "$work_dir/repair/node_modules/node-gyp/bin/node-gyp.js" rebuild
@@ -226,6 +246,7 @@ main() {
   run_id="$(date +%Y%m%d-%H%M%S)-$$"
   backup_dir="$HOME/.local/state/code-server-installer/backups/$run_id"
   install_backup="/opt/code-server.backup-$run_id"
+  log "Installer $INSTALLER_VERSION"
   log "Detected ${PRETTY_NAME:-$ID $VERSION_ID} ($(uname -m)); installing $RELEASE_TAG for $install_user."
   log 'Existing code-server settings and extensions will be removed from their active locations and backed up. The apt package will be removed if installed.'
   exec 3<>/dev/tty || die 'An interactive terminal is required for OAuth settings.'
