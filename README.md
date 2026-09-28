@@ -23,6 +23,23 @@ uses a system service and does not require sudo or a systemd user session.
 If curl is missing, install it with `sudo apt-get install curl` as a normal user,
 or `apt-get install curl` as root.
 
+Installer revision `2026-09-28.4` selects the service mode automatically:
+
+| Account / session | Service account and scope | Status and logs |
+| --- | --- | --- |
+| Normal user with a user session bus | Same user; user service | `systemctl --user status code-server`; `journalctl --user -u code-server -f` |
+| Normal user without a user bus, with sudo | Same user; system service | `sudo systemctl status code-server`; `sudo journalctl -u code-server -f` |
+| Root with `HOME=/root` | Root; system service | `systemctl status code-server`; `journalctl -u code-server -f` |
+
+If the downloaded script still reports `No systemd user session`, check
+`INSTALLER_VERSION` in your downloaded file. This immutable URL retrieves the
+revision with the automatic system-service fallback:
+
+```bash
+curl -fL -o install.sh https://raw.githubusercontent.com/cpuhf/code-server-cpu-oauth-releases/f1bbba11f8f91cbe94ae2f9f3b01d9b03e005794/install.sh
+bash install.sh
+```
+
 It performs the following steps:
 
 1. Detects the distribution, system version, and CPU architecture, downloads the pinned release,
@@ -241,6 +258,28 @@ To run it in the foreground instead of using systemd:
 CODE_SERVER_ENV_FILE="$HOME/.config/code-server/server.env" /opt/code-server/bin/code-server
 ```
 
+## Configuration and startup troubleshooting
+
+- `Unknown option --auth=password`: this Google OAuth build does not accept
+  upstream `auth`, `password`, or `hashed-password` settings. Back up the YAML
+  and remove those entries; the installer backs up and recreates its configuration.
+- Google `invalid_request` with `https://https://` in the redirect URI: set
+  `GOOGLE_REDIRECT_URI` to exactly `https://your-domain/auth/google/callback`,
+  register the same URI with Google, and restart the appropriate service.
+  The installer accepts one optional `https://` prefix and rejects duplicate prefixes.
+- `HTTP server listening on http://127.0.0.1:8080/` and
+  `Authentication: Google OAuth` indicate successful startup. `Not serving HTTPS`
+  is expected when your reverse proxy or Cloudflare Tunnel provides public HTTPS;
+  use `http://127.0.0.1:8080` as the upstream. The custom build's `0.0.0` version
+  string alone does not indicate startup failure.
+
+Use the status, restart, and log commands for your service scope. In the manual
+troubleshooting and update commands below, replace `systemctl --user` with
+`sudo systemctl`, and `journalctl --user` with `sudo journalctl`, for a system
+service installed by a normal user. Root system services use `systemctl` and
+`journalctl` without either prefix. The native-module tests should run as the
+account configured to run code-server.
+
 ## Troubleshooting a blank integrated terminal
 
 If the editor opens but its terminal stays blank, check the service logs:
@@ -453,7 +492,7 @@ uname -m
 ```
 
 Review logs before posting them publicly and remove credentials, tokens, and
-private workspace information. Do not post `server.env`.
+private workspace information. Do not post `.env` or `server.env`.
 
 ## Updating
 
@@ -461,5 +500,7 @@ Stop the service with `systemctl --user stop code-server`. Download and verify t
 new release, extract it into a new empty directory, and check its version before
 replacing `/opt/code-server`. Keep a copy of the previous installation until the
 new version works. Start the service with `systemctl --user start code-server`.
-Keep your existing `~/.config/code-server/server.env`; credentials do not belong
-in the archive.
+Keep your existing `~/.config/code-server/.env` (automatic installer) or
+`~/.config/code-server/server.env` (manual setup); credentials do not belong in
+the archive. Rerunning the interactive installer instead creates fresh
+configuration and backs up the previous settings and extensions.
