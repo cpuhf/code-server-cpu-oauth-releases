@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
-# Install the public x86_64 release on Ubuntu or Debian as a user service.
+# Install the public x86_64 release on Ubuntu or Debian with a user or system service.
 set -Eeuo pipefail
 
-INSTALLER_VERSION="2026-09-28.2"
+INSTALLER_VERSION="2026-09-28.3"
 RELEASE_TAG="ubuntu-2026-09-27"
 RELEASE_SHA256="8a1893dccefac286318130384fb24571705336187cca12a03e2b193b55225d8f"
 RELEASE_URL="https://github.com/cpuhf/code-server-cpu-oauth-releases/releases/download/$RELEASE_TAG/code-server-ubuntu.tar.gz"
 INSTALL_DIR="/opt/code-server"
+
+root_mode=false
+
+as_root() {
+  if [[ "$root_mode" == true ]]; then "$@"; else sudo "$@"; fi
+}
+service_ctl() {
+  if [[ "$root_mode" == true ]]; then systemctl "$@"; else systemctl --user "$@"; fi
+}
+service_logs() {
+  if [[ "$root_mode" == true ]]; then journalctl -u code-server "$@"; else journalctl --user -u code-server "$@"; fi
+}
 
 log() { printf '\n%s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -128,8 +140,8 @@ bootstrap_npm() {
 
 rebuild_pty() {
   log 'Building the terminal module against this server’s libraries...'
-  sudo apt-get update
-  sudo apt-get install -y build-essential python3
+  as_root apt-get update
+  as_root apt-get install -y build-essential python3
   local npm_cli
   bootstrap_npm
   (
@@ -165,8 +177,8 @@ stop_old_services() {
   fi
   for unit in code-server.service "code-server@$install_user.service"; do
     if [[ "$(systemctl show "$unit" -p LoadState --value)" != not-found ]]; then
-      sudo systemctl stop "$unit"
-      sudo systemctl disable "$unit" || log "Could not disable $unit; check this old service manually."
+      as_root systemctl stop "$unit"
+      as_root systemctl disable "$unit" || log "Could not disable $unit; check this old service manually."
     fi
   done
 }
@@ -176,7 +188,7 @@ replace_old_installation() {
   stop_old_services
   package_status="$(dpkg-query -W -f='${Status}' code-server 2>/dev/null || true)"
   if [[ "$package_status" == 'install ok installed' ]]; then
-    sudo apt-get remove -y code-server
+    as_root apt-get remove -y code-server
   fi
   install -d -m 700 "$backup_dir"
   for source in "$HOME/.local/share/code-server" "$HOME/.config/code-server"; do
@@ -191,23 +203,51 @@ replace_old_installation() {
   if [[ -e "$HOME/.config/systemd/user/code-server.service" || -L "$HOME/.config/systemd/user/code-server.service" ]]; then
     mv -- "$HOME/.config/systemd/user/code-server.service" "$backup_dir/code-server.service"
   fi
-  if sudo test -e "$INSTALL_DIR" || sudo test -L "$INSTALL_DIR"; then
-    sudo mv -- "$INSTALL_DIR" "$install_backup"
+  if [[ "$root_mode" == true ]] && [[ -e "$service_file" || -L "$service_file" ]]; then
+    mv -- "$service_file" "$backup_dir/system-code-server.service"
   fi
-  sudo install -d -m 755 "$INSTALL_DIR"
-  sudo cp -a "$stage/." "$INSTALL_DIR/"
-  sudo chown -R root:root "$INSTALL_DIR"
+  if as_root test -e "$INSTALL_DIR" || as_root test -L "$INSTALL_DIR"; then
+    as_root mv -- "$INSTALL_DIR" "$install_backup"
+  fi
+  as_root install -d -m 755 "$INSTALL_DIR"
+  as_root cp -a "$stage/." "$INSTALL_DIR/"
+  as_root chown -R root:root "$INSTALL_DIR"
 }
 
 configure_service() {
-  install -d -m 700 "$HOME/.config/code-server" "$HOME/.config/systemd/user"
+  service_file="${service_file:-$HOME/.config/systemd/user/code-server.service}"
+  install -d -m 700 "$HOME/.config/code-server"
   install -m 600 "$work_dir/settings.env" "$HOME/.config/code-server/.env"
   cat > "$HOME/.config/code-server/config.yaml" <<'YAML'
 bind-addr: 127.0.0.1:8080
 cert: false
 YAML
   chmod 600 "$HOME/.config/code-server/config.yaml"
-  cat > "$HOME/.config/systemd/user/code-server.service" <<'UNIT'
+  if [[ "$root_mode" == true ]]; then
+    install -d -m 755 "$(dirname "$service_file")"
+    cat > "$service_file" <<'UNIT'
+[Unit]
+Description=code-server with Google OAuth
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root
+Environment="HOME=/root"
+Environment="CODE_SERVER_ENV_FILE=/root/.config/code-server/.env"
+Environment="CODE_SERVER_CONFIG=/root/.config/code-server/config.yaml"
+ExecStart=/opt/code-server/bin/code-server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  else
+    install -d -m 700 "$HOME/.config/systemd/user"
+    cat > "$service_file" <<'UNIT'
 [Unit]
 Description=code-server with Google OAuth
 After=network-online.target
@@ -223,24 +263,34 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 UNIT
-  systemctl --user daemon-reload
-  sudo loginctl enable-linger "$install_user"
-  systemctl --user enable --now code-server.service
+  fi
+  chmod 644 "$service_file"
+  service_ctl daemon-reload
+  if [[ "$root_mode" != true ]]; then as_root loginctl enable-linger "$install_user"; fi
+  service_ctl enable --now code-server.service
 }
 
 main() {
   [[ $# == 0 ]] || die 'Usage: bash install.sh (interactive; no arguments).'
-  [[ $EUID != 0 ]] || die 'Run as your normal SSH user, without sudo. The script uses sudo when needed.'
-  [[ -n "$HOME" && "$HOME" != / && "$HOME" != /root && -d "$HOME" ]] || die 'Invalid user home directory.'
-  command -v sudo >/dev/null || die 'sudo is required.'
+  [[ -n "$HOME" && "$HOME" != / && -d "$HOME" ]] || die 'Invalid user home directory.'
   command -v systemctl >/dev/null || die 'systemd is required.'
+  if [[ $EUID == 0 ]]; then
+    root_mode=true
+    [[ "$HOME" == /root ]] || die 'Run root installation with HOME=/root (for example, log in directly as root).'
+    service_file=/etc/systemd/system/code-server.service
+    systemctl show-environment >/dev/null || die 'A running systemd system manager is required. Run inside the LXC container, not on the Proxmox host.'
+  else
+    command -v sudo >/dev/null || die 'sudo is required for installation as a normal user.'
+    [[ "$HOME" != /root ]] || die 'Invalid user home directory.'
+    service_file="$HOME/.config/systemd/user/code-server.service"
+    systemctl --user show-environment >/dev/null || die 'No systemd user session. Log in directly over SSH as your normal user.'
+  fi
   [[ -r /etc/os-release ]] || die 'Cannot identify the operating system.'
   # shellcheck disable=SC1091
   . /etc/os-release
   supported_os "${ID:-unknown}" || die "This installer supports Ubuntu and Debian, not ${ID:-unknown}."
   VERSION_ID="${VERSION_ID:-unknown}"
   [[ "$(uname -m)" == x86_64 ]] || die 'This release supports x86_64 only.'
-  systemctl --user show-environment >/dev/null || die 'No systemd user session. Log in directly over SSH as your normal user.'
   install_user="$(id -un)"
   local run_id
   run_id="$(date +%Y%m%d-%H%M%S)-$$"
@@ -252,10 +302,10 @@ main() {
   exec 3<>/dev/tty || die 'An interactive terminal is required for OAuth settings.'
   prompt_settings
   exec 3>&-
-  sudo -v
+  if [[ "$root_mode" != true ]]; then sudo -v; fi
   if ! command -v curl >/dev/null; then
-    sudo apt-get update
-    sudo apt-get install -y curl ca-certificates
+    as_root apt-get update
+    as_root apt-get install -y curl ca-certificates
   fi
   work_dir="$(mktemp -d /tmp/code-server-install.XXXXXX)"
   trap 'rm -rf -- "$work_dir"' EXIT
@@ -280,19 +330,23 @@ main() {
   local attempt status
   for attempt in {1..15}; do
     status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 2 "http://127.0.0.1:$bind_port/" || true)"
-    if systemctl --user is-active --quiet code-server.service && [[ "$status" =~ ^(200|302|303|307|308)$ ]]; then
+    if service_ctl is-active --quiet code-server.service && [[ "$status" =~ ^(200|302|303|307|308)$ ]]; then
       log "Installed successfully. Open https://$public_domain after configuring your HTTPS reverse proxy."
       log "Forward HTTPS and WebSocket requests to 127.0.0.1:$bind_port."
       log "OAuth callback: https://$public_domain/auth/google/callback"
       log "Private environment file: $HOME/.config/code-server/.env"
       log "Old user data/config backup: $backup_dir"
       log "Old /opt installation backup (if present): $install_backup"
-      log 'Logs: journalctl --user -u code-server -f'
+      if [[ "$root_mode" == true ]]; then
+        log 'Service: systemctl status code-server; logs: journalctl -u code-server -f'
+      else
+        log 'Service: systemctl --user status code-server; logs: journalctl --user -u code-server -f'
+      fi
       return
     fi
     sleep 1
   done
-  journalctl --user -u code-server -n 40 --no-pager
+  service_logs -n 40 --no-pager
   die 'The service did not pass the startup check. See the logs above.'
 }
 

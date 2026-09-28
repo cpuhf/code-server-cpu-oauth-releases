@@ -7,16 +7,19 @@ runtime dependencies.
 
 ## Automatic Ubuntu and Debian installation
 
-Download and run the interactive installer as your normal SSH user:
+Download and run the interactive installer inside your Ubuntu or Debian server/container:
 
 ```bash
 curl -fL -o install.sh https://raw.githubusercontent.com/cpuhf/code-server-cpu-oauth-releases/main/install.sh
 bash install.sh
 ```
 
-The [installer](install.sh) uses sudo for system changes. It accepts Ubuntu and Debian
-x86_64 with a working systemd user session and requires an interactive terminal.
-If curl is not installed, install it first with `sudo apt-get install curl`.
+The [installer](install.sh) accepts Ubuntu and Debian x86_64 and requires an
+interactive terminal and running systemd. For a normal SSH user, it uses sudo
+for system changes and requires a working systemd user session. For root, it
+uses a system service and does not require sudo or a systemd user session.
+If curl is missing, install it with `sudo apt-get install curl` as a normal user,
+or `apt-get install curl` as root.
 
 It performs the following steps:
 
@@ -34,8 +37,8 @@ It performs the following steps:
 5. Prompts for your public HTTPS hostname, Google OAuth client ID, client secret,
    allowed email addresses, and local port. The secret is hidden during entry.
 6. Writes `~/.config/code-server/.env` with permissions `600`, installs the
-   application under `/opt/code-server`, creates and starts the systemd user
-   service, enables startup after logout and at boot, and checks the HTTP service.
+   application under `/opt/code-server`, creates and starts a systemd service,
+   enables startup at boot (and after logout for user services), and checks the HTTP service.
 
 Keep the printed OAuth callback URL registered in your Google OAuth client.
 Configure an HTTPS reverse proxy with WebSocket support to forward to the
@@ -64,6 +67,33 @@ settings and extensions to another backup. To inspect the running service:
 systemctl --user --no-pager status code-server
 journalctl --user -u code-server -f
 ```
+
+### Root installation in Proxmox LXC
+
+Run the installer from a root console or SSH session **inside the LXC container**
+with `HOME=/root`, using the same download/run commands above. The container must
+run systemd; the installer checks this before prompting or changing installations.
+Run inside the guest rather than on the Proxmox host. A Proxmox full VM with
+systemd can use the same mode. Containers without systemd need a different
+startup setup.
+
+Root mode creates `/etc/systemd/system/code-server.service`, enabled under
+`multi-user.target`. OAuth settings are written to `/root/.config/code-server/.env`
+with mode `600`. The service explicitly uses `/root` as its home and runs as root;
+it does not use `systemctl --user`, linger, or sudo to manage its new service.
+Existing root settings, extensions, and a previous system unit are backed up.
+Settings belonging to other user accounts are not moved.
+
+```bash
+systemctl --no-pager status code-server
+journalctl -u code-server -f
+systemctl restart code-server
+```
+
+The code-server terminal and extensions will have root permissions inside the
+container, including access allowed to mounted directories. Root mode has been
+verified with isolated installer fixtures; a full installation in Proxmox LXC
+has not yet been tested.
 
 ## Download and install
 
@@ -102,8 +132,9 @@ sudo chown -R root:root /opt/code-server
 /opt/code-server/bin/code-server --version
 ```
 
-Run code-server as your normal user, not root. Personal settings, extensions, and
-workspaces belong to that user.
+These manual instructions use a normal user; personal settings, extensions, and
+workspaces belong to that user. For root installation, use the automatic installer
+and the system service instructions above.
 
 ### 3. Configure Google OAuth
 
