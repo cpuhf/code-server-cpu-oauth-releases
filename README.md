@@ -5,6 +5,56 @@ is private; this repository contains release downloads only. The archive
 contains the compiled application, bundled VS Code web assets, Node.js, and
 runtime dependencies.
 
+## Automatic Ubuntu installation
+
+Download and run the interactive installer as your normal SSH user:
+
+```bash
+curl -fL -o install.sh https://raw.githubusercontent.com/cpuhf/code-server-cpu-oauth-releases/main/install.sh
+bash install.sh
+```
+
+The [installer](install.sh) uses sudo for system changes. It supports Ubuntu
+x86_64 with a working systemd user session and requires an interactive terminal.
+If curl is not installed, install it first with `sudo apt-get install curl`.
+
+It performs the following steps:
+
+1. Detects Ubuntu version and CPU architecture, downloads the pinned release,
+   verifies its SHA-256 checksum, and checks the bundled runtime.
+2. Rebuilds `node-pty` on Ubuntu versions older than 26.04, or when the native
+   module cannot load. It installs build tools as needed and tests Bash startup
+   before replacing the existing installation.
+3. Stops existing code-server user and system services for the invoking account
+   and removes the `code-server` apt package if installed.
+4. Moves `~/.local/share/code-server` and `~/.config/code-server` into a private
+   backup directory under `~/.local/state/code-server-installer/backups/`. This
+   removes old settings and extensions from their active locations. An existing
+   `/opt/code-server` is moved to `/opt/code-server.backup-<timestamp>-<pid>`.
+5. Prompts for your public HTTPS hostname, Google OAuth client ID, client secret,
+   allowed email addresses, and local port. The secret is hidden during entry.
+6. Writes `~/.config/code-server/.env` with permissions `600`, installs the
+   application under `/opt/code-server`, creates and starts the systemd user
+   service, enables startup after logout and at boot, and checks the HTTP service.
+
+Keep the printed OAuth callback URL registered in your Google OAuth client.
+Configure an HTTPS reverse proxy with WebSocket support to forward to the
+printed `127.0.0.1:<port>` address. The installer configures code-server; your
+DNS, TLS certificate, and reverse proxy need to be configured separately.
+
+For older Ubuntu, the native-module rebuild downloads dependencies and Node.js
+headers. If apt or npm reports an error, fix that error before rerunning. Other
+native dependencies may still need a full build for the target Ubuntu version.
+The terminal rebuild was confirmed to fix the reported Ubuntu 25.04 installation.
+
+Rerunning the installer creates fresh configuration and moves the existing
+settings and extensions to another backup. To inspect the running service:
+
+```bash
+systemctl --user --no-pager status code-server
+journalctl --user -u code-server -f
+```
+
 ## Download and install
 
 The current build targets Ubuntu 26.04 on x86_64. Use a server with the same CPU
@@ -224,8 +274,8 @@ Error: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.42' not found
 
 This confirms that the bundled terminal module requires a newer GLIBC version
 than that server provides. Rebuilding the same `node-pty` version on the server
-can address this module's compatibility problem. This repair procedure has not
-yet been confirmed to resolve the reported installation.
+can address this module's compatibility problem. The user confirmed that this
+repair restored the integrated terminal on that Ubuntu 25.04 installation.
 
 Run the following over SSH. First install the compiler, Python, and npm:
 
