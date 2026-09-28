@@ -182,6 +182,36 @@ the native terminal dependency and basic Bash startup work on this server. It
 does not test VS Code's terminal host, browser connection, or shell startup files.
 If it fails, preserve the complete error or timeout message for diagnosis.
 
+### If the native terminal module cannot load
+
+If the terminal test reports `Failed to load native module: pty.node` and ends
+with `Cannot find module './prebuilds/linux-x64/pty.node'`, that last path is a
+fallback. The loader tries several paths and reports only the last loading
+error, so this message can hide why the bundled `build/Release/pty.node` failed.
+
+Run these commands over SSH as the same user who runs code-server:
+
+```bash
+/opt/code-server/lib/node -e \
+  "require('/opt/code-server/lib/vscode/node_modules/node-pty/build/Release/pty.node'); console.log('Native module loaded')"
+
+ldd /opt/code-server/lib/vscode/node_modules/node-pty/build/Release/pty.node
+
+cat /etc/os-release
+uname -m
+```
+
+The direct `require` exposes the original loading error. `ldd` checks the native
+module's shared library dependencies. Preserve the complete output of both
+commands, along with the operating system and architecture information.
+
+The current archive was built for Ubuntu 26.04 on x86_64. An older server may
+lack a required system library version. A `GLIBC_*` or `GLIBCXX_*` version error
+indicates a library compatibility problem; a missing-file error indicates that
+the expected module file is absent. These checks distinguish those cases from
+other loading failures. A compatible build is needed for library version
+mismatches; do not replace system libraries manually to match the archive.
+
 ### 3. Collect terminal host logs
 
 After reproducing the blank terminal, run:
