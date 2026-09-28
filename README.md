@@ -123,6 +123,92 @@ To run it in the foreground instead of using systemd:
 CODE_SERVER_ENV_FILE="$HOME/.config/code-server/server.env" /opt/code-server/bin/code-server
 ```
 
+## Troubleshooting a blank integrated terminal
+
+If the editor opens but its terminal stays blank, check the service logs:
+
+```bash
+journalctl --user -u code-server -f
+```
+
+Messages such as `No ptyHost heartbeat after 6 seconds` or
+`No ptyHost heartbeat after 12 seconds` indicate that VS Code's terminal host
+is not responding. They do not identify the underlying cause. A missing
+`vsda_bg.wasm` message concerns connection signing and, by itself, does not
+establish why the terminal failed.
+
+### 1. Restart and retry
+
+Over SSH, restart the service:
+
+```bash
+systemctl --user restart code-server
+```
+
+This interrupts active editor connections and may interrupt terminal sessions.
+Reload the browser page and open a new terminal.
+
+### 2. Test the bundled terminal dependency
+
+If the terminal stays blank, run this over SSH as the same normal user who runs
+code-server. It uses the bundled Node.js and starts Bash without loading shell
+startup files; no additional Node.js installation is needed:
+
+```bash
+/opt/code-server/lib/node <<'JS'
+const pty = require('/opt/code-server/lib/vscode/node_modules/node-pty');
+const timer = setTimeout(() => {
+  console.error('PTY timed out');
+  process.exit(1);
+}, 5000);
+const terminal = pty.spawn('/bin/bash',
+  ['--noprofile', '--norc', '-c', 'echo PTY_OK'], {
+    name: 'xterm',
+    cols: 80,
+    rows: 24,
+    cwd: process.env.HOME,
+    env: process.env
+  });
+terminal.onData(data => process.stdout.write(data));
+terminal.onExit(event => {
+  clearTimeout(timer);
+  process.exit(event.exitCode);
+});
+JS
+```
+
+Expected output is `PTY_OK`, followed by a successful exit. This confirms that
+the native terminal dependency and basic Bash startup work on this server. It
+does not test VS Code's terminal host, browser connection, or shell startup files.
+If it fails, preserve the complete error or timeout message for diagnosis.
+
+### 3. Collect terminal host logs
+
+After reproducing the blank terminal, run:
+
+```bash
+find ~/.local/share/code-server -type f -iname '*ptyhost*.log' \
+  -print -exec tail -n 80 {} \;
+
+journalctl --user -u code-server --since '10 minutes ago' --no-pager
+```
+
+The file search assumes the default user data location. If you configured a
+custom user data directory, search that directory instead. If no terminal host
+log is found, include that fact along with the service logs.
+
+For a debugging report, include the bundled code-server version, Ubuntu version,
+CPU architecture, terminal test output, and relevant log excerpts:
+
+```bash
+/opt/code-server/bin/code-server --version
+cat /etc/os-release
+uname -m
+```
+
+Review logs before posting them publicly and remove credentials, tokens, and
+private workspace information. Do not post `server.env`.
+
 ## Updating
 
 Stop the service with `systemctl --user stop code-server`. Download and verify the
