@@ -2,26 +2,56 @@
 # Install the public x86_64 release on Ubuntu or Debian with a user or system service.
 set -Eeuo pipefail
 
-INSTALLER_VERSION="2026-09-28.3"
+INSTALLER_VERSION="2026-09-28.4"
 RELEASE_TAG="ubuntu-2026-09-27"
 RELEASE_SHA256="8a1893dccefac286318130384fb24571705336187cca12a03e2b193b55225d8f"
 RELEASE_URL="https://github.com/cpuhf/code-server-cpu-oauth-releases/releases/download/$RELEASE_TAG/code-server-ubuntu.tar.gz"
 INSTALL_DIR="/opt/code-server"
 
 root_mode=false
+service_scope=user
 
 as_root() {
   if [[ "$root_mode" == true ]]; then "$@"; else sudo "$@"; fi
 }
 service_ctl() {
-  if [[ "$root_mode" == true ]]; then systemctl "$@"; else systemctl --user "$@"; fi
+  if [[ "$service_scope" == system ]]; then as_root systemctl "$@"; else systemctl --user "$@"; fi
 }
 service_logs() {
-  if [[ "$root_mode" == true ]]; then journalctl -u code-server "$@"; else journalctl --user -u code-server "$@"; fi
+  if [[ "$service_scope" == system ]]; then as_root journalctl -u code-server "$@"; else journalctl --user -u code-server "$@"; fi
 }
 
 log() { printf '\n%s\n' "$*"; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+
+select_service_mode() {
+  if [[ "$root_mode" == true ]]; then
+    service_scope=system
+    as_root systemctl show-environment >/dev/null || die 'A running systemd system manager is required.'
+  elif systemctl --user show-environment >/dev/null 2>&1; then
+    service_scope=user
+  else
+    service_scope=system
+    log 'No systemd user session; using a system service running as your account.'
+    as_root systemctl show-environment >/dev/null || die 'A running systemd system manager is required for the system service fallback.'
+  fi
+  if [[ "$service_scope" == system ]]; then
+    [[ "$HOME" == /* && "$HOME" != *[[:cntrl:]]* && "$HOME" != *[[:space:]] ]] || die 'System service requires an absolute home path without control characters or trailing whitespace.'
+    service_file=/etc/systemd/system/code-server.service
+  else
+    service_file="$HOME/.config/systemd/user/code-server.service"
+  fi
+}
+
+# Quote systemd directive values, including literal percent signs (specifiers).
+systemd_value() {
+  local value="$1"
+  [[ "$value" != *[[:cntrl:]]* ]] || die 'Systemd settings cannot contain control characters.'
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//%/%%}"
+  printf '"%s"' "$value"
+}
 
 supported_os() { [[ "$1" == ubuntu || "$1" == debian ]]; }
 
@@ -203,8 +233,10 @@ replace_old_installation() {
   if [[ -e "$HOME/.config/systemd/user/code-server.service" || -L "$HOME/.config/systemd/user/code-server.service" ]]; then
     mv -- "$HOME/.config/systemd/user/code-server.service" "$backup_dir/code-server.service"
   fi
-  if [[ "$root_mode" == true ]] && [[ -e "$service_file" || -L "$service_file" ]]; then
-    mv -- "$service_file" "$backup_dir/system-code-server.service"
+  if [[ "$service_scope" == system ]]; then
+    if as_root test -e "$service_file" || as_root test -L "$service_file"; then
+      as_root mv -- "$service_file" "$backup_dir/system-code-server.service"
+    fi
   fi
   if as_root test -e "$INSTALL_DIR" || as_root test -L "$INSTALL_DIR"; then
     as_root mv -- "$INSTALL_DIR" "$install_backup"
@@ -223,9 +255,8 @@ bind-addr: 127.0.0.1:8080
 cert: false
 YAML
   chmod 600 "$HOME/.config/code-server/config.yaml"
-  if [[ "$root_mode" == true ]]; then
-    install -d -m 755 "$(dirname "$service_file")"
-    cat > "$service_file" <<'UNIT'
+  if [[ "$service_scope" == system ]]; then
+    cat > "$work_dir/system-code-server.service" <<UNIT
 [Unit]
 Description=code-server with Google OAuth
 After=network-online.target
@@ -233,11 +264,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root
-Environment="HOME=/root"
-Environment="CODE_SERVER_ENV_FILE=/root/.config/code-server/.env"
-Environment="CODE_SERVER_CONFIG=/root/.config/code-server/config.yaml"
+User=$install_user
+WorkingDirectory=${HOME//%/%%}
+Environment=$(systemd_value "HOME=$HOME")
+Environment=$(systemd_value "CODE_SERVER_ENV_FILE=$HOME/.config/code-server/.env")
+Environment=$(systemd_value "CODE_SERVER_CONFIG=$HOME/.config/code-server/config.yaml")
 ExecStart=/opt/code-server/bin/code-server
 Restart=on-failure
 RestartSec=3
@@ -245,6 +276,8 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UNIT
+    as_root install -d -m 755 "$(dirname "$service_file")"
+    as_root install -m 644 "$work_dir/system-code-server.service" "$service_file"
   else
     install -d -m 700 "$HOME/.config/systemd/user"
     cat > "$service_file" <<'UNIT'
@@ -264,9 +297,9 @@ RestartSec=3
 WantedBy=default.target
 UNIT
   fi
-  chmod 644 "$service_file"
+  if [[ "$service_scope" == user ]]; then chmod 644 "$service_file"; fi
   service_ctl daemon-reload
-  if [[ "$root_mode" != true ]]; then as_root loginctl enable-linger "$install_user"; fi
+  if [[ "$service_scope" == user ]]; then as_root loginctl enable-linger "$install_user"; fi
   service_ctl enable --now code-server.service
 }
 
@@ -277,13 +310,9 @@ main() {
   if [[ $EUID == 0 ]]; then
     root_mode=true
     [[ "$HOME" == /root ]] || die 'Run root installation with HOME=/root (for example, log in directly as root).'
-    service_file=/etc/systemd/system/code-server.service
-    systemctl show-environment >/dev/null || die 'A running systemd system manager is required. Run inside the LXC container, not on the Proxmox host.'
   else
     command -v sudo >/dev/null || die 'sudo is required for installation as a normal user.'
     [[ "$HOME" != /root ]] || die 'Invalid user home directory.'
-    service_file="$HOME/.config/systemd/user/code-server.service"
-    systemctl --user show-environment >/dev/null || die 'No systemd user session. Log in directly over SSH as your normal user.'
   fi
   [[ -r /etc/os-release ]] || die 'Cannot identify the operating system.'
   # shellcheck disable=SC1091
@@ -292,6 +321,7 @@ main() {
   VERSION_ID="${VERSION_ID:-unknown}"
   [[ "$(uname -m)" == x86_64 ]] || die 'This release supports x86_64 only.'
   install_user="$(id -un)"
+  select_service_mode
   local run_id
   run_id="$(date +%Y%m%d-%H%M%S)-$$"
   backup_dir="$HOME/.local/state/code-server-installer/backups/$run_id"
@@ -337,8 +367,12 @@ main() {
       log "Private environment file: $HOME/.config/code-server/.env"
       log "Old user data/config backup: $backup_dir"
       log "Old /opt installation backup (if present): $install_backup"
-      if [[ "$root_mode" == true ]]; then
-        log 'Service: systemctl status code-server; logs: journalctl -u code-server -f'
+      if [[ "$service_scope" == system ]]; then
+        if [[ "$root_mode" == true ]]; then
+          log 'Service: systemctl status code-server; logs: journalctl -u code-server -f'
+        else
+          log 'Service: sudo systemctl status code-server; logs: sudo journalctl -u code-server -f'
+        fi
       else
         log 'Service: systemctl --user status code-server; logs: journalctl --user -u code-server -f'
       fi

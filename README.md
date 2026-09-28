@@ -16,7 +16,9 @@ bash install.sh
 
 The [installer](install.sh) accepts Ubuntu and Debian x86_64 and requires an
 interactive terminal and running systemd. For a normal SSH user, it uses sudo
-for system changes and requires a working systemd user session. For root, it
+for system changes and uses a user service when a systemd user session is
+available. If the user session bus is missing (for example, in Proxmox LXC), it
+automatically uses a system service running as that same user. For root, it
 uses a system service and does not require sudo or a systemd user session.
 If curl is missing, install it with `sudo apt-get install curl` as a normal user,
 or `apt-get install curl` as root.
@@ -61,12 +63,37 @@ Debian release. Debian support has been checked with simulated installer tests;
 an end-to-end installation on Debian has not yet been verified.
 
 Rerunning the installer creates fresh configuration and moves the existing
-settings and extensions to another backup. To inspect the running service:
+settings and extensions to another backup. For the normal-user service mode,
+inspect the running service with these commands (system service modes use the
+commands in the sections below):
 
 ```bash
 systemctl --user --no-pager status code-server
 journalctl --user -u code-server -f
 ```
+
+### Normal-user installation without a systemd user session
+
+If `systemctl --user` fails with `Failed to connect to bus: No medium found`
+but `sudo systemctl` works, download the latest installer and run `bash install.sh`
+as your normal user. It detects the missing user session and uses a system service;
+you may be prompted for your sudo password during this check.
+
+The service is installed at `/etc/systemd/system/code-server.service` with
+`User=` set to your account (for example, `lunchteacher`). Settings and extensions
+remain under your home directory, and your private OAuth file remains at
+`~/.config/code-server/.env`. This mode uses system startup at boot and does not
+require linger or a user bus. Manage it with:
+
+```bash
+sudo systemctl --no-pager status code-server
+sudo journalctl -u code-server -f
+sudo systemctl restart code-server
+```
+
+The installer still backs up existing settings and replaces any prior
+code-server system service. Only one installation can occupy `/opt/code-server`
+and the `code-server.service` system unit on this server.
 
 ### Root installation in Proxmox LXC
 
