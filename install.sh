@@ -2,7 +2,7 @@
 # Install the public x86_64 release on Ubuntu or Debian with a user or system service.
 set -Eeuo pipefail
 
-INSTALLER_VERSION="2026-09-28.4"
+INSTALLER_VERSION="2026-09-29.1"
 RELEASE_TAG="ubuntu-2026-09-27"
 RELEASE_SHA256="8a1893dccefac286318130384fb24571705336187cca12a03e2b193b55225d8f"
 RELEASE_URL="https://github.com/cpuhf/code-server-cpu-oauth-releases/releases/download/$RELEASE_TAG/code-server-ubuntu.tar.gz"
@@ -114,6 +114,18 @@ prompt_settings() {
     printf 'Enter a port between 1 and 65535.\n' >&3
   done
   bind_port="$((10#$bind_port))"
+  while :; do
+    printf 'Enable mobile phone control (iOS app), with /home as the default project path? [y/N]: ' >&3
+    IFS= read -r input <&3 || die 'Input ended.'
+    case "$input" in
+      [yY]|[yY][eE][sS]) mobile_enabled=true; break ;;
+      ''|[nN]|[nN][oO]) mobile_enabled=false; break ;;
+      *) printf 'Enter yes or no.\n' >&3 ;;
+    esac
+  done
+  if [[ "$mobile_enabled" == true ]]; then
+    [[ -d /home ]] || die 'Mobile access requires the default project directory /home to exist.'
+  fi
   log "Register this exact Google OAuth redirect URI: https://$public_domain/auth/google/callback"
 }
 
@@ -124,6 +136,10 @@ write_env() {
     umask 077
     printf "GOOGLE_CLIENT_ID='%s'\nGOOGLE_CLIENT_SECRET='%s'\nGOOGLE_ALLOWED_USERS='%s'\nGOOGLE_REDIRECT_URI='https://%s/auth/google/callback'\nCODE_SERVER_BIND_ADDR='127.0.0.1:%s'\n" \
       "$client_id" "$client_secret" "$allowed_users" "$public_domain" "$bind_port" > "$destination"
+    printf 'MOBILE_API_ENABLED=%s\n' "$mobile_enabled" >> "$destination"
+    if [[ "$mobile_enabled" == true ]]; then
+      printf '%s\n' 'MOBILE_WORKSPACES_JSON=[{"id":"home","name":"Home","root":"/home"}]' >> "$destination"
+    fi
   )
   chmod 600 "$destination"
 }
@@ -365,6 +381,11 @@ main() {
       log "Forward HTTPS and WebSocket requests to 127.0.0.1:$bind_port."
       log "OAuth callback: https://$public_domain/auth/google/callback"
       log "Private environment file: $HOME/.config/code-server/.env"
+      if [[ "$mobile_enabled" == true ]]; then
+        log 'Mobile phone control enabled. Default project path: /home (subject to the service account permissions).'
+      else
+        log 'Mobile phone control disabled.'
+      fi
       log "Old user data/config backup: $backup_dir"
       log "Old /opt installation backup (if present): $install_backup"
       if [[ "$service_scope" == system ]]; then
