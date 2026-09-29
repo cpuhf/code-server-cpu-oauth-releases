@@ -293,19 +293,39 @@ df -i /tmp /var/tmp /opt "$HOME"
 findmnt -T /tmp
 ```
 
-If `/var/tmp` is on the disk-backed filesystem with sufficient space, change
-the downloaded installer to stage there and rerun it as the same account:
+If `/var/tmp` is on the disk-backed filesystem with sufficient space, use this
+exact command as the same account. It downloads the known installer revision
+`2026-09-28.4` into a new file, patches its hardcoded staging path, prints the
+resulting `mktemp` line, and runs that file:
 
 ```bash
-sed -i.bak 's|mktemp -d /tmp/code-server-install\.XXXXXX|mktemp -d /var/tmp/code-server-install.XXXXXX|' install.sh
-bash install.sh
+curl -fL -o install-disk.sh https://raw.githubusercontent.com/cpuhf/code-server-cpu-oauth-releases/f1bbba11f8f91cbe94ae2f9f3b01d9b03e005794/install.sh &&
+sed -i 's|/tmp/code-server-install\.XXXXXX|/var/tmp/code-server-install.XXXXXX|g' install-disk.sh &&
+grep -n 'mktemp -d' install-disk.sh &&
+bash install-disk.sh
 ```
 
-This workaround applies to installer revision `2026-09-28.4`, which hardcodes
-`/tmp/code-server-install.XXXXXX`; setting `TMPDIR` alone does not change that
-path. The command preserves the original script as `install.sh.bak`. The
-archive and extracted files will use `/var/tmp`, while the final installation
-remains under `/opt/code-server`.
+The printed line should contain:
+
+```text
+work_dir="$(mktemp -d /var/tmp/code-server-install.XXXXXX)"
+```
+
+This immutable download avoids accidentally rerunning an older, unmodified
+`install.sh`. It pins a known revision rather than following future changes on
+`main`. That revision hardcodes its staging directory, so setting `TMPDIR`
+alone does not change it. The archive and extracted files will use `/var/tmp`,
+while the final installation remains under `/opt/code-server`.
+
+If the same error persists with this patched installer, collect:
+
+```bash
+quota -s
+df -h /var/tmp
+df -i /var/tmp
+```
+
+If `quota` is unavailable, report that along with the `df` output.
 
 `Disk quota exceeded` can also indicate a user/group quota on bytes or file
 count even when the filesystem has free space. If moving staging does not fix
