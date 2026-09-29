@@ -23,7 +23,7 @@ uses a system service and does not require sudo or a systemd user session.
 If curl is missing, install it with `sudo apt-get install curl` as a normal user,
 or `apt-get install curl` as root.
 
-Installer revision `2026-09-28.4` selects the service mode automatically:
+Installer revision `2026-09-29.1` selects the service mode automatically:
 
 | Account / session | Service account and scope | Status and logs |
 | --- | --- | --- |
@@ -54,10 +54,28 @@ It performs the following steps:
    removes old settings and extensions from their active locations. An existing
    `/opt/code-server` is moved to `/opt/code-server.backup-<timestamp>-<pid>`.
 5. Prompts for your public HTTPS hostname, Google OAuth client ID, client secret,
-   allowed email addresses, and local port. The secret is hidden during entry.
+   allowed email addresses, local port, and whether to enable mobile phone control
+   for the iOS app (default: No). The secret is hidden during entry.
 6. Writes `~/.config/code-server/.env` with permissions `600`, installs the
    application under `/opt/code-server`, creates and starts a systemd service,
    enables startup at boot (and after logout for user services), and checks the HTTP service.
+
+Choosing **Yes** for mobile phone control writes the following to
+`~/.config/code-server/.env`:
+
+```dotenv
+MOBILE_API_ENABLED=true
+MOBILE_WORKSPACES_JSON=[{"id":"home","name":"Home","root":"/home"}]
+```
+
+The iOS app starts with the **Home** workspace at `/home`. Access is limited by
+the service account's filesystem permissions and the configured Google account
+allowlist. Choosing **No** (or pressing Enter) writes `MOBILE_API_ENABLED=false`.
+To change the workspace later, edit this file and restart the appropriate service.
+The deployed release must include the mobile API. To check it, request
+`https://your-domain/auth/mobile/authorize` without query parameters: an enabled
+endpoint returns HTTP 400 with `INVALID_AUTH_REQUEST`; a generic 401 can indicate
+mobile support is disabled or absent from the deployed build.
 
 Keep the printed OAuth callback URL registered in your Google OAuth client.
 Configure an HTTPS reverse proxy with WebSocket support to forward to the
