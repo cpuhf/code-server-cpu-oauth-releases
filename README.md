@@ -276,6 +276,45 @@ To run it in the foreground instead of using systemd:
 CODE_SERVER_ENV_FILE="$HOME/.config/code-server/server.env" /opt/code-server/bin/code-server
 ```
 
+## Disk quota exceeded while extracting into /tmp
+
+The installer stages the downloaded archive and extracted application under
+`/tmp`. Free space on `/` does not guarantee enough space there: `/tmp` can be
+a separate RAM-backed `tmpfs`. For example, a server reported 13 GB free on
+`/dev/sda1` but only a 979 MB filesystem at `/tmp`. That staging limit is a
+likely cause of extraction failure on such a system. The installer removes its
+temporary directory after failure, so `/tmp` may appear empty afterward.
+
+Check the filesystems and their available space:
+
+```bash
+df -h /tmp /var/tmp /opt "$HOME"
+df -i /tmp /var/tmp /opt "$HOME"
+findmnt -T /tmp
+```
+
+If `/var/tmp` is on the disk-backed filesystem with sufficient space, change
+the downloaded installer to stage there and rerun it as the same account:
+
+```bash
+sed -i.bak 's|mktemp -d /tmp/code-server-install\.XXXXXX|mktemp -d /var/tmp/code-server-install.XXXXXX|' install.sh
+bash install.sh
+```
+
+This workaround applies to installer revision `2026-09-28.4`, which hardcodes
+`/tmp/code-server-install.XXXXXX`; setting `TMPDIR` alone does not change that
+path. The command preserves the original script as `install.sh.bak`. The
+archive and extracted files will use `/var/tmp`, while the final installation
+remains under `/opt/code-server`.
+
+`Disk quota exceeded` can also indicate a user/group quota on bytes or file
+count even when the filesystem has free space. If moving staging does not fix
+it, run `quota -s` if available and ask the administrator to check the applicable
+quota. `df -i` reports filesystem-wide inode availability, not account quotas.
+Do not resize partitions merely because of this message. Extraction happens
+before the installer replaces the old installation; the printed backup paths
+are only potential locations and do not mean backups were created.
+
 ## Configuration and startup troubleshooting
 
 - `Unknown option --auth=password`: this Google OAuth build does not accept
